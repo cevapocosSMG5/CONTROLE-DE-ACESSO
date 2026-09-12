@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Ponto Virtual</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:12px;background:#0f1b33;color:#fff}
+h3{margin:0 0 10px;text-align:center;letter-spacing:1px}
+#reader{width:100%;max-width:420px;margin:0 auto;border-radius:10px;overflow:hidden;background:#000}
+#box{max-width:420px;margin:10px auto}
+select,button,input{width:100%;padding:14px;margin:5px 0;font-size:16px;border-radius:8px;border:0}
+button{background:#2b6cb0;color:#fff;font-weight:bold;cursor:pointer}
+button.sec{background:#4a5568}
+button.go{background:#38a169}
+#info{background:#1a2a4a;padding:10px;border-radius:8px;margin:6px 0;font-size:14px;display:none;line-height:1.6}
+#msg{padding:14px;border-radius:8px;font-weight:bold;text-align:center;white-space:pre-line;color:#111;background:#e2e8f0;min-height:22px}
+.ok{background:#9ae6b4!important}
+.warn{background:#faf089!important}
+.err{background:#feb2b2!important}
+.lbl{font-size:12px;color:#a0aec0;margin-top:12px}
+#fora{max-width:420px;margin:8px auto;font-size:13px}
+#fora div{background:#1a2a4a;padding:8px 10px;border-radius:6px;margin:4px 0}
+#fora div.x{background:#63171b}
+</style>
+</head>
+<body>
+
+<h3>PONTO VIRTUAL</h3>
+<div id="reader"></div>
+
+<div id="box">
+  <button class="go" id="bcam" onclick="pedirCamera()">ATIVAR CAMERA</button>
+  <div id="info"></div>
+  <select id="mot" style="display:none"><option value="">-- Motivo da saida --</option></select>
+  <button id="btn" style="display:none" onclick="confirmar()">CONFIRMAR</button>
+
+  <div class="lbl">Leitura manual / leitor USB:</div>
+  <input id="manual" placeholder="Digite ou escaneie o codigo" inputmode="numeric" autocomplete="off">
+  <button class="sec" onclick="lerManual()">ENVIAR CODIGO</button>
+  <button class="sec" onclick="reset()">NOVA LEITURA</button>
+
+  <div id="msg"></div>
+</div>
+
+<div class="lbl" style="max-width:420px;margin:14px auto 0">FORA DA OPERACAO AGORA:</div>
+<div id="fora"></div>
+
+<script>
+/* ============================================================
+   COLE AQUI A URL DO SEU APPS SCRIPT (termina em /exec)
+   ============================================================ */
+var API = "https://script.google.com/macros/s/AKfycbwXGprJq-mzKciRetQKv8RTEuQSEe6rtQDcDJMqqLABhTZ83h_rYaZ97kzQWp-q48ls/exec";
+
+var atual = null, travado = false, seq = 0, qr = null;
+
+function call(params, cb){
+  var fn = 'jsonp_' + (++seq);
+  var s  = document.createElement('script');
+  window[fn] = function(r){
+    try { cb(r); } finally { delete window[fn]; if(s.parentNode) s.remove(); }
+  };
+  var q = [];
+  for (var k in params) q.push(k + '=' + encodeURIComponent(params[k]));
+  q.push('callback=' + fn);
+  s.src = API + '?' + q.join('&');
+  s.onerror = function(){
+    show('err','Falha de conexao. Verifique a URL da API.');
+    travado = false;
+  };
+  document.body.appendChild(s);
+}
+
+function show(c, t){
+  var d = document.getElementById('msg');
+  d.className = c;
+  d.innerText = t;
+}
+
+call({acao:'motivos'}, function(l){
+  var s = document.getElementById('mot');
+  (l || []).forEach(function(m){
+    var o = document.createElement('option');
+    o.value = m.motivo;
+    o.text  = m.motivo + ' (' + m.limite + ' min)';
+    s.add(o);
+  });
+});
+
+function pedirCamera(){
+  if (!navigator.mediaDevices){
+    show('err','Navegador sem suporte. Use o campo manual.');
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' } })
+    .then(function(st){
+      st.getTracks().forEach(function(t){ t.stop(); });
+      document.getElementById('bcam').style.display = 'none';
+      iniciar();
+    })
+    .catch(function(e){
+      show('err','Camera: ' + e.name + '\nUse o campo manual abaixo.');
+    });
+}
+
+function iniciar(){
+  qr = new Html5Qrcode("reader");
+  qr.start({ facingMode:"environment" },
+    { fps:10, qrbox:{ width:250, height:250 } },
+    onLeitura,
+    function(){})
+    .catch(function(e){ show('err','Falha ao iniciar leitor: ' + e); });
+}
+
+function onLeitura(txt){
+  if (travado) return;
+  travado = true;
+  show('warn','Lido: ' + txt + '\nConsultando...');
+
+  call({acao:'identificar', cod:txt}, function(r){
+    if (!r || !r.ok){
+      show('err', r ? r.msg : 'Erro na consulta.');
+      setTimeout(function(){ travado = false; }, 1800);
+      return;
+    }
+    atual = r;
+    var i = document.getElementById('info');
+    i.style.display = 'block';
+    i.innerHTML =
+      '<b style="font-size:16px">' + r.nome + '</b><br>' +
+      'Codigo: ' + r.codigo + ' | Setor: ' + (r.setor || '-') +
+      (r.emPausa
+        ? '<br><span style="color:#faf089">FORA desde ' + r.saida + ' (' + r.motivoAberto + ')</span>'
+        : '<br><span style="color:#9ae6b4">Na operacao</span>');
+
+    document.getElementById('mot').style.display = r.emPausa ? 'none' : 'block';
+    show('warn', r.emPausa
+      ? 'Toque CONFIRMAR para registrar o RETORNO'
+      : 'Selecione o motivo e confirme a SAIDA');
+    document.getElementById('btn').style.display = 'block';
+  });
+}
+
+function lerManual(){
+  var v = document.getElementById('manual').value;
+  if (!v){ show('err','Digite o codigo.'); return; }
+  travado = false;
+  onLeitura(v);
+}
+
+function confirmar(){
+  if (!atual) return;
+  var m = atual.emPausa ? '' : document.getElementById('mot').value;
+  if (!atual.emPausa && !m){ show('err','Selecione o motivo.'); return; }
+
+  document.getElementById('btn').style.display = 'none';
+  show('warn','Registrando...');
+
+  call({acao:'registrar', cod:atual.codigo, motivo:m}, function(r){
+    if (!r || !r.ok){
+      show('err', r ? r.msg : 'Falha ao registrar.');
+      setTimeout(function(){ travado = false; }, 2000);
+      return;
+    }
+    show(r.excedeu ? 'warn' : 'ok', r.msg + '\n' + (r.hora || ''));
+    carregarPainel();
+    setTimeout(reset, 3000);
+  });
+}
+
+function reset(){
+  atual = null;
+  travado = false;
+  document.getElementById('info').style.display = 'none';
+  document.getElementById('mot').style.display  = 'none';
+  document.getElementById('mot').value = '';
+  document.getElementById('btn').style.display  = 'none';
+  document.getElementById('manual').value = '';
+  show('', 'Aponte o cartao para a camera');
+}
+
+function carregarPainel(){
+  call({acao:'painel'}, function(l){
+    var d = document.getElementById('fora');
+    if (!l || !l.length){
+      d.innerHTML = '<div>Ninguem fora da operacao.</div>';
+      return;
+    }
+    var h = '';
+    l.forEach(function(p){
+      h += '<div class="' + (p.excedeu ? 'x' : '') + '">' +
+           '<b>' + p.nome + '</b> - ' + p.motivo +
+           ' | ' + p.min.toFixed(0) + ' min' +
+           (p.lim ? ' / ' + p.lim : '') +
+           (p.excedeu ? ' <b>EXCEDIDO</b>' : '') +
+           '</div>';
+    });
+    d.innerHTML = h;
+  });
+}
+
+document.getElementById('manual').addEventListener('keyup', function(e){
+  if (e.key === 'Enter') lerManual();
+});
+
+window.onload = function(){
+  reset();
+  carregarPainel();
+  setInterval(carregarPainel, 60000);
+};
+</script>
+</body>
+</html>
